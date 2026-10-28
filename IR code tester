@@ -1,0 +1,187 @@
+/*
+ * IR Remote Button Code Tester (NEC) — OLED version
+ * Board : WeMos D1 Mini (ESP8266)
+ * OLED  : 0.96" SSD1306 128x64 I2C (address 0x3C or 0x3D)
+ * IR    : VS1838B / TSOP38238 on D5 (GPIO14)
+ *
+ * Libraries:
+ *   - IRremoteESP8266      (v2.8.x)
+ *   - Adafruit SSD1306
+ *   - Adafruit GFX Library
+ */
+
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRutils.h>
+
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH  128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// -------- IR --------
+const uint16_t IR_PIN = D5;            // GPIO14
+const uint16_t CAPTURE_BUFFER = 1024;
+IRrecv irrecv(IR_PIN, CAPTURE_BUFFER, 15, true);
+decode_results results;
+
+// -------- Helpers --------
+void printHex32(Print &out, uint32_t value) {
+  char buf[11];
+  snprintf(buf, sizeof(buf), "0x%08X", value);
+  out.print(buf);
+}
+
+// Map common NEC command bytes to a readable name
+const char* necCmdName(uint8_t cmd) {
+  switch (cmd) {
+    case 0x45: return "POWER";
+    case 0x46: return "MENU";
+    case 0x47: return "TEST";
+    case 0x44: return "PLUS";
+    case 0x40: return "BACK";
+    case 0x43: return "PREV";
+    case 0x15: return "PLAY";
+    case 0x07: return "VOL-";
+    case 0x09: return "NEXT";
+    case 0x16: return "0";
+    case 0x19: return "EQ";
+    case 0x0D: return "VOL+";
+    case 0x18: return "DOWN";
+    case 0x5E: return "UP";
+    case 0x08: return "STOP";
+    case 0x1C: return "LEFT";
+    case 0x5A: return "OK";
+    case 0x42: return "RIGHT";
+    case 0x52: return "CH-";
+    case 0x4A: return "CH+";
+    default:   return "";
+  }
+}
+
+void drawLine(uint8_t row, const char* label, const char* value) {
+  // rows 0..3 in a 4-line 16-char-ish layout
+  int y = row * 12;
+  display.setCursor(0, y);
+  display.print(label);
+  display.setCursor(0, y);
+  // print value after fixed-width label
+  display.setCursor(strlen(label) * 6, y);
+  display.print(value);
+}
+
+void showStartup() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println(F("IR Code Tester"));
+  display.println(F("(NEC)"));
+  display.println();
+  display.println(F("Waiting..."));
+  display.display();
+}
+
+void setup() {
+  Serial.begin(9600);
+  delay(100);
+  Serial.println();
+  Serial.println(F("IR Code Tester (NEC) starting..."));
+
+  Wire.begin(D2, D1);            // SDA, SCL on WeMos D1 Mini
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 alloc failed (check address 0x3C/0x3D)"));
+    for (;;) delay(1000);
+  }
+  display.clearDisplay();
+  display.display();
+  showStartup();
+
+  irrecv.enableIRIn();
+  Serial.println(F("Ready. Press a remote button."));
+}
+
+void loop() {
+  if (!irrecv.decode(&results)) return;
+
+  // Ignore NEC repeat frames for display
+  if (results.decode_type == NEC && results.value == 0xFFFFFFFF) {
+    Serial.println(F("(NEC repeat ignored)"));
+    irrecv.resume();
+    return;
+  }
+  if (results.repeat) {
+    Serial.println(F("(repeat frame ignored)"));
+    irrecv.resume();
+    return;
+  }
+
+  // Only accept NEC; ignore others so display stays clean
+  if (results.decode_type != NEC) {
+    Serial.print(F("Non-NEC ignored: "));
+    Serial.println(typeToString(results.decode_type));
+    irrecv.resume();
+    return;
+  }
+
+  uint8_t addr  = (uint8_t)((results.value >> 16) & 0xFF); // device address
+  uint8_t cmd   = (uint8_t)((results.value      ) & 0xFF); // command byte
+  const char* nm = necCmdName(cmd);
+
+  // -------- OLED (128x64, text size 1 -> ~21 chars/line) --------
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setCursor(0, 0);
+  display.println(F("NEC IR Code"));
+
+  display.setCursor(0, 12);
+  display.print(F("HEX: "));
+  printHex32(display, (uint32_t)results.value);
+
+  display.setCursor(0, 24);
+  display.print(F("Dec: "));
+  display.print((uint32_t)results.value);
+
+  display.setCursor(0, 36);
+  display.print(F("Addr:0x"));
+  if (addr < 0x10) display.print('0');
+  display.print(addr, HEX);
+  display.print(F(" Cmd:0x"));
+  if (cmd < 0x10) display.print('0');
+  display.print(cmd, HEX);
+
+  display.setCursor(0, 48);
+  display.print(F("Bits:"));
+  display.print(results.bits);
+  display.print(F(" "));
+  if (nm[0]) display.print(nm);
+  else       display.print(F("(?)"));
+
+  display.display();
+
+  // -------- Serial log --------
+  Serial.println(F("---------------"));
+  Serial.println(F("Protocol : NEC"));
+  Serial.print(F("HEX      : "));
+  printHex32(Serial, (uint32_t)results.value);
+  Serial.println();
+  Serial.print(F("Dec      : "));
+  Serial.println((uint32_t)results.value);
+  Serial.print(F("Address  : 0x"));
+  Serial.println(addr, HEX);
+  Serial.print(F("Command  : 0x"));
+  Serial.print(cmd, HEX);
+  if (nm[0]) { Serial.print(F(" (")); Serial.print(nm); Serial.print(F(")")); }
+  Serial.println();
+  Serial.print(F("Bits     : "));
+  Serial.println(results.bits);
+  Serial.println(F("---------------"));
+
+  irrecv.resume();
+}
